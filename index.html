@@ -172,12 +172,11 @@ input[type=date]{min-width:0;max-width:100%}
       </div>
       <div>
         <h1>수학 교구 대여</h1>
-        <p class="sub">K-STEM 탐구기반 수학 수업 물품 · 빌릴 교구를 고르고, 기간과 대여자를 적어 주세요.</p>
+        <p class="sub">K-STEM 탐구기반 수학 수업 물품 · 빌릴 교구를 고르고, 기간과 학년·반을 적어 주세요.</p>
       </div>
     </div>
     <div class="stats">
       <div class="stat"><b id="statActive">0</b><span>대여 중</span></div>
-      <div class="stat late"><b id="statLate">0</b><span>반납 지연</span></div>
     </div>
   </header>
 
@@ -191,11 +190,7 @@ input[type=date]{min-width:0;max-width:100%}
     <aside class="panel" aria-labelledby="formTitle">
       <h2 id="formTitle">대여 정보</h2>
       <div class="field">
-        <label for="borrower">대여자</label>
-        <input type="text" id="borrower" placeholder="예: 김민지 선생님" autocomplete="name">
-      </div>
-      <div class="field">
-        <label for="group">소속 (학년·반)</label>
+        <label for="group">학년·반</label>
         <input type="text" id="group" placeholder="예: 3학년 2반">
       </div>
       <div class="field">
@@ -228,7 +223,7 @@ input[type=date]{min-width:0;max-width:100%}
     <div class="rhead">
       <h2 id="listTitle">대여 현황</h2>
       <div style="display:flex;gap:10px;flex-wrap:wrap">
-        <input class="search" id="search" type="search" placeholder="대여자·교구 검색" aria-label="대여 기록 검색">
+        <input class="search" id="search" type="search" placeholder="학년·반, 교구 검색" aria-label="대여 기록 검색">
         <div class="tabs" role="tablist">
           <button role="tab" aria-selected="true" data-tab="active">대여 중</button>
           <button role="tab" aria-selected="false" data-tab="returned">반납 완료</button>
@@ -300,7 +295,7 @@ function setAdmin(c){
 function renderAdmin(){
   const b = $('#adminBtn'); if(!b) return;
   b.textContent = adminCode ? '관리자 로그아웃' : '관리자 로그인';
-  $('#adminState').textContent = adminCode ? '관리자 모드: 대여 기록을 삭제할 수 있습니다.' : '';
+  $('#adminState').textContent = adminCode ? '관리자 모드: 반납 지연 표시와 기록 삭제를 사용할 수 있습니다.' : '';
 }
 
 const $ = s => document.querySelector(s);
@@ -313,16 +308,17 @@ const fmt = s => { if(!s) return ''; const [y,m,d] = s.split('-'); const w='일�
 const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ---------- 서버 통신 ---------- */
-const notConfigured = () => !API_URL || !/^https:\/\/script\.google\.com\//.test(API_URL);
+const API = String(API_URL).trim();
+const notConfigured = () => !/^https:\/\//.test(API);
 
 async function api(action, body = {}, retried = false){
   if(notConfigured()) throw new Error('SETUP');
   let res;
   if(action === 'list'){
-    res = await fetch(`${API_URL}?action=list&code=${encodeURIComponent(code)}&t=${Date.now()}`);
+    res = await fetch(`${API}?action=list&code=${encodeURIComponent(code)}&t=${Date.now()}`);
   }else{
     // text/plain으로 보내야 Apps Script가 추가 확인 요청 없이 받습니다.
-    res = await fetch(API_URL, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+    res = await fetch(API, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify({ action, code, ...body }) });
   }
   let data;
@@ -370,7 +366,7 @@ function renderCatalog(){
   if(!loaded){
     $('#filters').innerHTML = '';
     if(loadError === 'SETUP'){
-      el.innerHTML = `<div class="state"><b>아직 구글 시트와 연결되지 않았습니다.</b><br>index.html 맨 아래 스크립트의 API_URL에 Apps Script 웹 앱 주소를 넣어 주세요.</div>`;
+      el.innerHTML = `<div class="state"><b>아직 구글 시트와 연결되지 않았습니다.</b><br>index.html에서 Ctrl+F로 <b>API_URL</b>을 찾아, 따옴표 안에 Apps Script 웹 앱 주소(https://script.google.com/…/exec)를 넣어 주세요.</div>`;
     }else if(loadError){
       el.innerHTML = `<div class="state"><b>물품 목록을 불러오지 못했습니다.</b><br>${esc(loadError)}<br><br><button type="button" class="quick-retry" onclick="refresh()">다시 불러오기</button></div>`;
     }else{
@@ -442,12 +438,19 @@ function renderPicked(){
 }
 function renderDays(){
   const s=$('#start').value, e=$('#end').value;
+  $('#end').min = s || '';
   if(!s||!e){ $('#days').textContent=''; return; }
   const n = diffDays(s,e);
   $('#days').textContent = n<0 ? '반납 예정일이 대여일보다 빠릅니다.' : n===0 ? '당일 반납' : `${n}일 동안 대여`;
 }
+// 열 때마다 대여일은 오늘, 반납 예정일은 1주 뒤로 자동 설정 (직접 바꿀 수 있음)
 $('#start').value = today(); $('#end').value = addDays(today(),7);
-['start','end'].forEach(id=>$('#'+id).addEventListener('change',renderDays));
+$('#start').addEventListener('change',()=>{
+  const s=$('#start').value, e=$('#end').value;
+  if(s && e && diffDays(s,e)<0) $('#end').value = s; // 반납일이 대여일보다 앞서지 않게
+  renderDays();
+});
+$('#end').addEventListener('change',renderDays);
 $('#quick').addEventListener('click',e=>{
   const d = e.target.dataset.d; if(d==null) return;
   if(!$('#start').value) $('#start').value = today();
@@ -457,12 +460,11 @@ $('#quick').addEventListener('click',e=>{
 $('#submit').addEventListener('click', async ()=>{
   const err = $('#err'); err.textContent='';
   if(!loaded) return err.textContent='물품 목록을 불러온 뒤에 대여할 수 있습니다.';
-  const borrower = $('#borrower').value.trim();
   const group = $('#group').value.trim();
   const start = $('#start').value, end = $('#end').value;
   const ids = Object.keys(cart);
   if(!ids.length) return err.textContent='대여할 교구를 하나 이상 골라 주세요.';
-  if(!borrower) { $('#borrower').focus(); return err.textContent='대여자 이름을 적어 주세요.'; }
+  if(!group) { $('#group').focus(); return err.textContent='학년·반을 적어 주세요.'; }
   if(!start||!end) return err.textContent='대여일과 반납 예정일을 정해 주세요.';
   if(diffDays(start,end)<0) return err.textContent='반납 예정일은 대여일과 같거나 그 이후여야 합니다.';
   const over = ids.find(id=>cart[id]>available(id));
@@ -470,20 +472,22 @@ $('#submit').addEventListener('click', async ()=>{
 
   const btn = $('#submit'); btn.disabled = true; btn.textContent = '시트에 저장하는 중…';
   try{
-    await api('create', { rental:{ borrower, group, start, end, note:$('#note').value.trim(),
+    await api('create', { rental:{ group, start, end, note:$('#note').value.trim(),
       items: ids.map(id=>({id, qty:cart[id]})) } });
     cart = {}; $('#note').value='';
-    toast(`${borrower}님 대여를 등록했습니다.`);
+    toast(`${group} 대여를 등록했습니다.`);
     tab='active'; syncTabs();
   }catch(e){ err.textContent = e.message === 'SETUP' ? '구글 시트와 연결된 뒤에 대여할 수 있습니다.' : e.message; }
   finally{ btn.disabled = false; btn.textContent = '대여하기'; renderAll(); }
 });
 
 /* ---------- 대여 현황 ---------- */
+const who = r => r.group || r.borrower || '이름 없음';
 function statusOf(r){
   if(r.status==='returned') return {cls:'done', badge:'<span class="badge ok">반납 완료</span>'};
   const left = diffDays(today(), r.end);
-  if(left<0) return {cls:'late', badge:`<span class="badge late">${-left}일 지연</span>`};
+  // 지연 정보는 관리자 모드에서만 표시
+  if(left<0) return adminCode ? {cls:'late', badge:`<span class="badge late">${-left}일 지연</span>`} : {cls:'', badge:''};
   if(left===0) return {cls:'', badge:'<span class="badge soon">오늘 반납</span>'};
   if(left<=2) return {cls:'', badge:`<span class="badge soon">${left}일 남음</span>`};
   return {cls:'', badge:''};
@@ -506,7 +510,7 @@ function renderList(){
       ? `${fmt(r.start)} ~ ${fmt(r.end)} · ${fmt(r.returnedOn)} 반납`
       : `${fmt(r.start)} ~ ${fmt(r.end)}`;
     return `<article class="card ${st.cls}">
-      <div class="who">${esc(r.borrower)}${r.group?`<small>${esc(r.group)}</small>`:''}${st.badge}</div>
+      <div class="who">${esc(who(r))}${r.borrower&&r.group?`<small>${esc(r.borrower)}</small>`:''}${st.badge}</div>
       <div class="actions">
         ${r.status==='active'
           ? `<button type="button" data-ret="${esc(r.id)}">반납 처리</button>`
@@ -523,10 +527,10 @@ $('#list').addEventListener('click', async e=>{
   const b = e.target.closest('button'); if(!b || busy) return;
   const id = b.dataset.ret||b.dataset.undo||b.dataset.del;
   const r = rentals.find(x=>x.id===id); if(!r) return;
-  if(b.dataset.del && !confirm(`${r.borrower}님의 대여 기록을 삭제할까요? 시트에서도 지워집니다.`)) return;
+  if(b.dataset.del && !confirm(`${who(r)}의 대여 기록을 삭제할까요? 시트에서도 지워집니다.`)) return;
   busy = true; $('#list').classList.add('saving');
   try{
-    if(b.dataset.ret){ await api('return',{id}); toast(`${r.borrower}님 교구를 반납 처리했습니다.`); }
+    if(b.dataset.ret){ await api('return',{id}); toast(`${who(r)} 교구를 반납 처리했습니다.`); }
     else if(b.dataset.undo){ await api('undo',{id}); toast('반납을 취소했습니다.'); }
     else { await api('delete',{id, adminCode}); toast('기록을 삭제했습니다.'); }
   }catch(err){ if(err.admin) setAdmin(''); toast(err.message); }
@@ -541,7 +545,6 @@ function syncTabs(){ document.querySelectorAll('.tabs button').forEach(b=>b.setA
 function renderStats(){
   const act = rentals.filter(r=>r.status==='active');
   $('#statActive').textContent = act.length;
-  $('#statLate').textContent = act.filter(r=>diffDays(today(),r.end)<0).length;
 }
 function renderAll(){
   for(const id of Object.keys(cart)){ const av=available(id); if(av<=0) delete cart[id]; else if(cart[id]>av) cart[id]=av; }
