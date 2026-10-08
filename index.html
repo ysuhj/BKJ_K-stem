@@ -243,7 +243,7 @@ input[type=date]{min-width:0;max-width:100%}
    설정: Apps Script 웹 앱 주소를 따옴표 안에 붙여 넣으세요.
    예) 'https://script.google.com/macros/s/AKfy..../exec'
    ============================================================ */
-const API_URL = 'https://script.google.com/macros/s/AKfycbyRsWhDgHrR-vQCbGXherkVFhbw9tdhXvNQoGgx4M07mAFTWon3mwsK0d4rafnjL6qT/exec';
+const API_URL = '여기에_웹앱_주소를_붙여_넣으세요';
 
 /* 사진 폴더: images/물품명.jpg 형식으로 올리면 자동으로 보입니다.
    시트에 '사진' 열을 만들어 파일명(예: blokus.png)이나 사진 주소를 적어도 됩니다. */
@@ -311,7 +311,7 @@ const esc = s => String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>
 const API = String(API_URL).trim();
 const notConfigured = () => !/^https:\/\//.test(API);
 
-async function api(action, body = {}, retried = false){
+async function api(action, body = {}, retried = false, apply = true){
   if(notConfigured()) throw new Error('SETUP');
   let res;
   if(action === 'list'){
@@ -328,16 +328,23 @@ async function api(action, body = {}, retried = false){
       const input = prompt(code ? '암호가 맞지 않습니다. 다시 입력해 주세요.' : '교구 대여 앱 암호를 입력해 주세요.');
       if(input == null) throw new Error('암호를 입력해야 사용할 수 있습니다.');
       code = input.trim(); try{ localStorage.setItem(CODE_KEY, code); }catch{}
-      return api(action, body, true);
+      return api(action, body, true, apply);
     }
     if(ADMIN_MSG[data.error]){ const e = new Error(ADMIN_MSG[data.error]); e.admin = true; throw e; }
     throw new Error(data.error === 'PASSCODE' ? '암호가 맞지 않습니다.' : data.error);
   }
-  applyData(data);
+  if(apply) applyData(data);
   return data;
 }
 
-function applyData(data){
+const CACHE_KEY = 'math-rental-cache';
+let lastKey = '', dataChanged = false;
+function applyData(data, fromCache = false){
+  const key = JSON.stringify([data.items, data.rentals]);
+  dataChanged = key !== lastKey || !loaded;
+  if(!dataChanged){ loadError = ''; return; }
+  lastKey = key;
+  if(!fromCache){ try{ localStorage.setItem(CACHE_KEY, JSON.stringify({items:data.items, rentals:data.rentals})); }catch{} }
   ITEMS = (data.items||[]).map(i=>({ ...i, id:i.name, unit:'세트', icon:iconFor(i.area) }));
   byId = Object.fromEntries(ITEMS.map(i=>[i.id,i]));
   rentals = data.rentals||[];
@@ -345,9 +352,31 @@ function applyData(data){
 }
 
 async function refresh(){
-  try{ await api('list'); }
-  catch(e){ if(!loaded) loadError = e.message; else console.warn(e); }
+  if(pending) return;
+  try{ await api('list'); if(!dataChanged) return; }
+  catch(e){ if(!loaded) loadError = e.message; else { console.warn(e); return; } }
+  if(pending) return; // 그사이 시작된 저장이 있으면 그 결과를 기다림
   renderAll();
+}
+
+/* 저장 작업: 화면에 먼저 반영하고(낙관적 업데이트), 서버 결과로 확정 */
+let pending = 0;
+async function write(action, body, optimistic, rollback){
+  pending++;
+  if(optimistic) optimistic();
+  renderAll();
+  try{
+    const data = await api(action, body, false, false);
+    pending--;
+    if(!pending){ applyData(data); renderAll(); }
+    return data;
+  }catch(e){
+    pending--;
+    if(rollback) rollback();
+    renderAll();
+    if(!pending) refresh();
+    throw e;
+  }
 }
 
 function inUse(itemId){
@@ -470,15 +499,16 @@ $('#submit').addEventListener('click', async ()=>{
   const over = ids.find(id=>cart[id]>available(id));
   if(over) return err.textContent=`${over} 수량이 부족합니다. 남은 수량: ${available(over)}`;
 
-  const btn = $('#submit'); btn.disabled = true; btn.textContent = '시트에 저장하는 중…';
-  try{
-    await api('create', { rental:{ group, start, end, note:$('#note').value.trim(),
-      items: ids.map(id=>({id, qty:cart[id]})) } });
-    cart = {}; $('#note').value='';
-    toast(`${group} 대여를 등록했습니다.`);
-    tab='active'; syncTabs();
-  }catch(e){ err.textContent = e.message === 'SETUP' ? '구글 시트와 연결된 뒤에 대여할 수 있습니다.' : e.message; }
-  finally{ btn.disabled = false; btn.textContent = '대여하기'; renderAll(); }
+  const note = $('#note').value.trim();
+  const items = ids.map(id=>({id, qty:cart[id]}));
+  const savedCart = {...cart};
+  const temp = { id:'tmp'+Date.now(), createdAt:Date.now(), borrower:'', group, start, end, status:'active', returnedOn:'', note, items, pending:true };
+  tab='active'; syncTabs();
+  write('create', { rental:{ group, start, end, note, items } },
+    ()=>{ rentals = [...rentals, temp]; cart = {}; $('#note').value=''; },
+    ()=>{ rentals = rentals.filter(x=>x!==temp); cart = savedCart; if(!$('#note').value) $('#note').value = note; })
+    .then(()=>toast(`${group} 대여를 등록했습니다.`))
+    .catch(e=>{ err.textContent = e.message === 'SETUP' ? '구글 시트와 연결된 뒤에 대여할 수 있습니다.' : e.message; toast('대여를 저장하지 못했습니다.'); });
 });
 
 /* ---------- 대여 현황 ---------- */
@@ -510,9 +540,9 @@ function renderList(){
       ? `${fmt(r.start)} ~ ${fmt(r.end)} · ${fmt(r.returnedOn)} 반납`
       : `${fmt(r.start)} ~ ${fmt(r.end)}`;
     return `<article class="card ${st.cls}">
-      <div class="who">${esc(who(r))}${r.borrower&&r.group?`<small>${esc(r.borrower)}</small>`:''}${st.badge}</div>
+      <div class="who">${esc(who(r))}${r.borrower&&r.group?`<small>${esc(r.borrower)}</small>`:''}${r.pending?'<span class="badge soon">저장 중…</span>':st.badge}</div>
       <div class="actions">
-        ${r.status==='active'
+        ${r.pending ? '' : r.status==='active'
           ? `<button type="button" data-ret="${esc(r.id)}">반납 처리</button>`
           : `<button type="button" data-undo="${esc(r.id)}">반납 취소</button>`}
         ${adminCode ? `<button type="button" class="ghost" data-del="${esc(r.id)}">기록 삭제</button>` : ''}
@@ -524,17 +554,26 @@ function renderList(){
   }).join('');
 }
 $('#list').addEventListener('click', async e=>{
-  const b = e.target.closest('button'); if(!b || busy) return;
+  const b = e.target.closest('button'); if(!b) return;
   const id = b.dataset.ret||b.dataset.undo||b.dataset.del;
   const r = rentals.find(x=>x.id===id); if(!r) return;
   if(b.dataset.del && !confirm(`${who(r)}의 대여 기록을 삭제할까요? 시트에서도 지워집니다.`)) return;
-  busy = true; $('#list').classList.add('saving');
+  const before = {...r};
+  const restore = ()=>{ const i = rentals.findIndex(x=>x.id===id); if(i>=0) rentals[i] = before; else rentals = [...rentals, before]; };
   try{
-    if(b.dataset.ret){ await api('return',{id}); toast(`${who(r)} 교구를 반납 처리했습니다.`); }
-    else if(b.dataset.undo){ await api('undo',{id}); toast('반납을 취소했습니다.'); }
-    else { await api('delete',{id, adminCode}); toast('기록을 삭제했습니다.'); }
-  }catch(err){ if(err.admin) setAdmin(''); toast(err.message); }
-  finally{ busy = false; $('#list').classList.remove('saving'); renderAll(); }
+    if(b.dataset.ret){
+      toast(`${who(r)} 교구를 반납 처리했습니다.`);
+      await write('return',{id}, ()=>{ rentals = rentals.map(x=>x.id===id?{...x,status:'returned',returnedOn:today()}:x); }, restore);
+    }else if(b.dataset.undo){
+      const over = (r.items||[]).find(x=>x.qty>available(x.id));
+      if(over) return toast(`${over.id} 수량이 부족해 반납을 취소할 수 없습니다.`);
+      toast('반납을 취소했습니다.');
+      await write('undo',{id}, ()=>{ rentals = rentals.map(x=>x.id===id?{...x,status:'active',returnedOn:''}:x); }, restore);
+    }else{
+      toast('기록을 삭제했습니다.');
+      await write('delete',{id, adminCode}, ()=>{ rentals = rentals.filter(x=>x.id!==id); }, restore);
+    }
+  }catch(err){ if(err.admin) setAdmin(''); toast(err.message + ' 원래대로 되돌렸습니다.'); }
 });
 $('#search').addEventListener('input', e=>{ query=e.target.value.trim(); renderList(); });
 document.querySelector('.tabs').addEventListener('click', e=>{
@@ -564,10 +603,12 @@ $('#adminBtn').addEventListener('click', async ()=>{
 /* ---------- 시작 ---------- */
 renderAdmin();
 $('#mode').textContent = '대여 기록은 구글 시트의 \'대여 시트\' 탭에 저장됩니다. 1분마다 새로 불러옵니다.';
+// 지난번에 불러온 목록을 먼저 바로 보여 주고, 뒤에서 최신 내용으로 바꿈
+if(!notConfigured()){ try{ const c = JSON.parse(localStorage.getItem(CACHE_KEY)||'null'); if(c && c.items) applyData(c, true); }catch{} }
 renderAll();
 refresh();
-setInterval(()=>{ if(document.visibilityState==='visible' && !busy) refresh(); }, 60000);
-document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible' && !busy) refresh(); });
+setInterval(()=>{ if(document.visibilityState==='visible') refresh(); }, 60000);
+document.addEventListener('visibilitychange', ()=>{ if(document.visibilityState==='visible') refresh(); });
 </script>
 </body>
 </html>
